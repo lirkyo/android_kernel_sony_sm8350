@@ -36,6 +36,11 @@ endif
 $(obj)/Image: vmlinux FORCE
 	$(call if_changed,objcopy)
 
+ifeq ($(CONFIG_KPM),y)
+	cd $(obj) && $(realpath $(srctree))/KernelSU/kpm/patch_linux
+	mv -f $(obj)/oImage $@
+endif
+
 $(obj)/Image.bz2: $(obj)/Image FORCE
 	$(call if_changed,bzip2)
 
