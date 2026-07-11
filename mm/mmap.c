@@ -74,6 +74,25 @@ int mmap_rnd_compat_bits __read_mostly = CONFIG_ARCH_MMAP_RND_COMPAT_BITS;
 static bool ignore_rlimit_data;
 core_param(ignore_rlimit_data, ignore_rlimit_data, bool, 0644);
 
+/*
+ * Maximum number of PROT_NONE anonymous VMAs allowed per process.
+ * Set to 0 to disable the limit (kernel default).
+ *
+ * Android's Scudo heap allocator uses mmap(PROT_NONE, MAP_ANONYMOUS|MAP_PRIVATE)
+ * to create "primary reserve" regions — placeholder virtual address reservations
+ * that are never backed by physical pages. Each reserve can be 256 MB ~ 1280 MB.
+ *
+ * In buggy HAL processes, Scudo may create excessive reserves (e.g., 19 regions
+ * totaling ~8.2 GB), exhausting the process's virtual address space and causing
+ * binder thread initialization failures → permanent binder_thread_read deadlock.
+ *
+ * Setting this to a sane value (e.g., 4) effectively disables Scudo's aggressive
+ * reserve behavior: when Scudo's mmap(PROT_NONE) fails with ENOMEM, it falls
+ * back to smaller on-demand allocations via its secondary allocator, which
+ * operates correctly within available virtual address space.
+ */
+unsigned long sysctl_max_prot_none_anon __read_mostly;
+
 static void unmap_region(struct mm_struct *mm,
 		struct vm_area_struct *vma, struct vm_area_struct *prev,
 		unsigned long start, unsigned long end);
@@ -1396,6 +1415,28 @@ static inline bool file_mmap_ok(struct file *file, struct inode *inode,
 }
 
 /*
+ * Count existing PROT_NONE anonymous VMAs in the process address space.
+ * Scudo allocator uses these as primary reserve regions; when the count
+ * exceeds the sysctl limit, further PROT_NONE anon mmap() calls are
+ * rejected with -ENOMEM, forcing Scudo to fall back to its secondary
+ * allocator.
+ *
+ * Must be called with mm->mmap_sem held.
+ */
+static unsigned long count_prot_none_anon_vmas(struct mm_struct *mm)
+{
+	struct vm_area_struct *vma;
+	unsigned long count = 0;
+
+	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+		if (!vma->vm_file &&
+		    (vma->vm_flags & (VM_READ | VM_WRITE | VM_EXEC)) == 0)
+			count++;
+	}
+	return count;
+}
+
+/*
  * The caller must hold down_write(&current->mm->mmap_sem).
  */
 unsigned long do_mmap(struct file *file, unsigned long addr,
@@ -1441,6 +1482,26 @@ unsigned long do_mmap(struct file *file, unsigned long addr,
 	/* Too many mappings? */
 	if (mm->map_count > sysctl_max_map_count)
 		return -ENOMEM;
+
+	/*
+	 * Limit PROT_NONE anonymous mappings to prevent virtual address
+	 * space exhaustion from runaway allocator reserve regions.
+	 *
+	 * Scudo (Android's hardened heap allocator) creates PROT_NONE
+	 * MAP_ANONYMOUS MAP_PRIVATE regions as "primary reserves" to
+	 * partition its size classes. Each reserve ranges from 256 MB to
+	 * 1280 MB. A buggy HAL may create 19+ such regions (~8.2 GB),
+	 * starving the process of virtual address space for legitimate
+	 * allocations such as binder thread pools.
+	 *
+	 * When this limit is hit, Scudo's mmap() gets ENOMEM and falls
+	 * back to its secondary allocator (on-demand mmap with actual
+	 * PROT_READ|PROT_WRITE), which works correctly.
+	 */
+	if (!file && prot == PROT_NONE && sysctl_max_prot_none_anon) {
+		if (count_prot_none_anon_vmas(mm) >= sysctl_max_prot_none_anon)
+			return -ENOMEM;
+	}
 
 	/* Obtain the address to map to. we verify (or select) it and ensure
 	 * that it represents a valid section of the address space.

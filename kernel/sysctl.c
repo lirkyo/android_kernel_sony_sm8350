@@ -1981,6 +1981,14 @@ static struct ctl_table vm_table[] = {
 		.proc_handler	= proc_dointvec_minmax,
 		.extra1		= SYSCTL_ZERO,
 	},
+	{
+		.procname	= "max_prot_none_anon",
+		.data		= &sysctl_max_prot_none_anon,
+		.maxlen		= sizeof(sysctl_max_prot_none_anon),
+		.mode		= 0644,
+		.proc_handler	= proc_doulongvec_minmax,
+		.extra1		= SYSCTL_ZERO,
+	},
 #else
 	{
 		.procname	= "nr_trim_pages",
