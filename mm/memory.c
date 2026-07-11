@@ -72,6 +72,9 @@
 #include <linux/dax.h>
 #include <linux/oom.h>
 #include <linux/numa.h>
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+#include <linux/susfs_def.h>
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 
 #include <trace/events/kmem.h>
 
@@ -4544,6 +4547,12 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
 		void *maddr;
 		struct page *page = NULL;
 
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
+		vma = find_vma(mm, addr);
+		if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+			break;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+
 		ret = get_user_pages_remote(tsk, mm, addr, 1,
 				gup_flags, &page, &vma, NULL);
 		if (ret <= 0) {
@@ -4554,7 +4563,11 @@ int __access_remote_vm(struct task_struct *tsk, struct mm_struct *mm,
 			 * Check if this is a VM_IO | VM_PFNMAP VMA, which
 			 * we can access using slightly different code.
 			 */
+#ifdef CONFIG_KSU_SUSFS_SUS_MAP
 			vma = find_vma(mm, addr);
+			if (vma && vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
+				break;
+#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
 			if (!vma || vma->vm_start > addr)
 				break;
 			if (vma->vm_ops && vma->vm_ops->access)
